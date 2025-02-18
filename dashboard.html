@@ -1,0 +1,56 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mine Monitoring Dashboard</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        .chart { width: 100%; height: 300px; margin-bottom: 20px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Mine Monitoring Dashboard</h1>
+    <a href="/logout">Logout</a>
+    <div class="grid">
+        <div class="chart" id="co-chart"></div>
+        <div class="chart" id="co2-chart"></div>
+        <div class="chart" id="temp-chart"></div>
+        <div class="chart" id="humidity-chart"></div>
+    </div>
+
+    <script>
+        function updateCharts() {
+            fetch('/api/sensor-data')
+                .then(response => response.json())
+                .then(data => {
+                    const charts = {
+                        'co-chart': {title: 'CO Level', data: data.co_level},
+                        'co2-chart': {title: 'CO2 Level', data: data.co2_level},
+                        'temp-chart': {title: 'Temperature', data: data.temperature},
+                        'humidity-chart': {title: 'Humidity', data: data.humidity}
+                    };
+
+                    for (const [elementId, chartInfo] of Object.entries(charts)) {
+                        const trace = {
+                            x: chartInfo.data.timestamps,
+                            y: chartInfo.data.values,
+                            type: 'scatter',
+                            mode: 'lines'
+                        };
+
+                        const layout = {
+                            title: chartInfo.title,
+                            margin: { t: 30, l: 40, r: 20, b: 40 }
+                        };
+
+                        Plotly.newPlot(elementId, [trace], layout);
+                    }
+                });
+        }
+
+        updateCharts();
+        setInterval(updateCharts, 30000);
+    </script>
+</body>
+</html>
