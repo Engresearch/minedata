@@ -1,5 +1,5 @@
 # minedata
-data acquisition
+/n data acquisition
 Create a data ingestion pipeline for mining environmental data. This pipeline uses Python with pandas for data handling and SQLite for storage.
 required packages:
 Pandas
