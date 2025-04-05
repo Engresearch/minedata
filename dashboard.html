@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html>
 <head>
@@ -17,6 +16,8 @@
         <div class="chart" id="co2-chart"></div>
         <div class="chart" id="temp-chart"></div>
         <div class="chart" id="humidity-chart"></div>
+        <div class="chart" id="pm25-chart"></div>
+        <div class="chart" id="pm10-chart"></div>
     </div>
 
     <script>
@@ -28,7 +29,9 @@
                         'co-chart': {title: 'CO Level', data: data.co_level},
                         'co2-chart': {title: 'CO2 Level', data: data.co2_level},
                         'temp-chart': {title: 'Temperature', data: data.temperature},
-                        'humidity-chart': {title: 'Humidity', data: data.humidity}
+                        'humidity-chart': {title: 'Humidity', data: data.humidity},
+                        'pm25-chart': {title: 'PM2.5', data: data.pm25},
+                        'pm10-chart': {title: 'PM10', data: data.pm10}
                     };
 
                     for (const [elementId, chartInfo] of Object.entries(charts)) {
@@ -38,17 +41,14 @@
                             type: 'scatter',
                             mode: 'lines'
                         };
-
                         const layout = {
                             title: chartInfo.title,
                             margin: { t: 30, l: 40, r: 20, b: 40 }
                         };
-
                         Plotly.newPlot(elementId, [trace], layout);
                     }
                 });
         }
-
         updateCharts();
         setInterval(updateCharts, 30000);
     </script>
