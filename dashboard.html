@@ -6,11 +6,15 @@
     <style>
         .chart { width: 100%; height: 300px; margin-bottom: 20px; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 20px; }
+        #alerts { padding: 20px; background: #ffe6e6; border: 1px solid #ff9999; margin: 20px; }
+        #alerts ul { list-style-type: none; padding: 0; }
+        #alerts li { margin: 5px 0; }
     </style>
 </head>
 <body>
     <h1>Mine Monitoring Dashboard</h1>
     <a href="/logout">Logout</a>
+    <div id="alerts"><h3>Recent Alerts</h3><ul id="alert-list"></ul></div>
     <div class="grid">
         <div class="chart" id="co-chart"></div>
         <div class="chart" id="co2-chart"></div>
@@ -33,7 +37,6 @@
                         'pm25-chart': {title: 'PM2.5', data: data.pm25},
                         'pm10-chart': {title: 'PM10', data: data.pm10}
                     };
-
                     for (const [elementId, chartInfo] of Object.entries(charts)) {
                         const trace = {
                             x: chartInfo.data.timestamps,
@@ -41,16 +44,30 @@
                             type: 'scatter',
                             mode: 'lines'
                         };
-                        const layout = {
-                            title: chartInfo.title,
-                            margin: { t: 30, l: 40, r: 20, b: 40 }
-                        };
+                        const layout = { title: chartInfo.title, margin: { t: 30, l: 40, r: 20, b: 40 } };
                         Plotly.newPlot(elementId, [trace], layout);
                     }
                 });
         }
+
+        function updateAlerts() {
+            fetch('/api/alerts')
+                .then(response => response.json())
+                .then(alerts => {
+                    const alertList = document.getElementById('alert-list');
+                    alertList.innerHTML = '';
+                    alerts.forEach(alert => {
+                        const li = document.createElement('li');
+                        li.textContent = `${alert.timestamp} - ${alert.location_id}: CO=${alert.co_level}, CO2=${alert.co2_level}, Temp=${alert.temperature}, Humidity=${alert.humidity}, PM2.5=${alert.pm25}, PM10=${alert.pm10}`;
+                        alertList.appendChild(li);
+                    });
+                });
+        }
+
         updateCharts();
+        updateAlerts();
         setInterval(updateCharts, 30000);
+        setInterval(updateAlerts, 10000);  // Update alerts more frequently
     </script>
 </body>
 </html>
