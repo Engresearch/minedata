@@ -1,0 +1,14 @@
+pandas==2.2.2
+numpy==1.26.4
+python-dateutil==2.9.0.post0
+sqlite3  # Included in Python standard library, no need to install separately
+pyserial==3.5
+digi-xbee==1.4.1
+flask==3.0.3
+flask-login==0.6.3
+RPi.GPIO==0.7.1  # Note: Requires Raspberry Pi-specific installation
+scikit-learn==1.4.2
+smtplib  # Included in Python standard library, no need to install separately
+pjsua2==2.13  # Note: May require manual compilation or system-specific installation
+torch==2.3.0
+transformers==4.40.0
