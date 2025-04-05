@@ -13,7 +13,16 @@ class MineDataCollector:
         self.use_sensors = use_sensors
         self.port = port
         self.baud_rate = baud_rate
+        self.calibration_factors = {
+            'co_level': 0.1,  # MQ7 calibration factor
+            'co2_level': 0.2,  # MQ135 calibration factor
+            'temperature': 1.0,  # DHT11 (no adjustment needed typically)
+            'humidity': 1.0,   # DHT11
+            'pm25': 1.0,       # SDS011
+            'pm10': 1.0        # SDS011
+        }
         self.setup_database()
+
         if use_sensors:
             try:
                 self.xbee = XBeeDevice(self.port, self.baud_rate)
@@ -37,26 +46,47 @@ class MineDataCollector:
                 pm10 FLOAT
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS calibration_log (
+                timestamp DATETIME,
+                sensor TEXT,
+                raw_value FLOAT,
+                calibrated_value FLOAT,
+                calibration_factor FLOAT
+            )
+        ''')
         conn.commit()
         conn.close()
 
+    def log_calibration(self, sensor, raw_value, calibrated_value, factor):
+        conn = sqlite3.connect(self.db_path)
+        data = {
+            'timestamp': datetime.now(),
+            'sensor': sensor,
+            'raw_value': raw_value,
+            'calibrated_value': calibrated_value,
+            'calibration_factor': factor
+        }
+        df = pd.DataFrame([data])
+        df.to_sql('calibration_log', conn, if_exists='append', index=False)
+        conn.close()
+
     def get_sensor_reading(self):
-        """Get readings from Arduino via Zigbee"""
+        """Get readings from Arduino via Zigbee with calibration"""
         if not self.use_sensors:
             return self.simulate_sensor_reading()
         try:
-            # Receive data from Arduino via Zigbee
             packet = self.xbee.read_data(timeout=5)
             if packet:
                 data = packet.data.decode().strip().split(',')
-                return {
-                    'co_level': float(data[0]),
-                    'co2_level': float(data[1]),
-                    'temperature': float(data[2]),
-                    'humidity': float(data[3]),
-                    'pm25': float(data[4]),
-                    'pm10': float(data[5])
-                }
+                raw_values = [float(x) for x in data]
+                calibrated = {}
+                for i, (key, factor) in enumerate(self.calibration_factors.items()):
+                    raw = raw_values[i]
+                    calib_value = raw * factor
+                    calibrated[key] = calib_value
+                    self.log_calibration(key, raw, calib_value, factor)
+                return calibrated
             else:
                 raise Exception("No data received")
         except Exception as e:
@@ -64,7 +94,7 @@ class MineDataCollector:
             return self.simulate_sensor_reading()
 
     def simulate_sensor_reading(self):
-        return {
+        sim_reading = {
             'co_level': random.uniform(0, 50),
             'co2_level': random.uniform(300, 1000),
             'temperature': random.uniform(15, 35),
@@ -72,6 +102,10 @@ class MineDataCollector:
             'pm25': random.uniform(0, 35),
             'pm10': random.uniform(0, 150)
         }
+        for key in sim_reading:
+            self.log_calibration(key, sim_reading[key] / self.calibration_factors[key], 
+                               sim_reading[key], self.calibration_factors[key])
+        return sim_reading
 
     def collect_data(self, location_id, duration_seconds=60, interval_seconds=5):
         conn = sqlite3.connect(self.db_path)
