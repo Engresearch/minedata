@@ -22,6 +22,18 @@ def get_sensor_data():
     conn.close()
     return df
 
+def get_recent_alerts():
+    conn = sqlite3.connect('mine_data.db')
+    # Assuming alerts are logged in sensor_data with a threshold check; adjust as needed
+    df = pd.read_sql_query("""
+        SELECT timestamp, location_id, co_level, co2_level, temperature, humidity, pm25, pm10
+        FROM sensor_data 
+        WHERE co_level > 50 OR co2_level > 1000 OR temperature > 30 OR humidity > 85 OR pm25 > 35 OR pm10 > 150
+        ORDER BY timestamp DESC LIMIT 10
+    """, conn)
+    conn.close()
+    return df.to_dict(orient='records')
+
 @app.route('/')
 @login_required
 def index():
@@ -53,6 +65,12 @@ def sensor_data():
         'pm10': {'values': df['pm10'].tolist(), 'timestamps': df['timestamp'].tolist()}
     }
     return jsonify(data)
+
+@app.route('/api/alerts')
+@login_required
+def alerts():
+    alerts = get_recent_alerts()
+    return jsonify(alerts)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
