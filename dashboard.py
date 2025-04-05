@@ -1,15 +1,10 @@
-
 from flask import Flask, render_template, jsonify, request, redirect, url_for
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user
-import plotly.express as px
-import plotly.utils
-import json
-from datetime import datetime, timedelta
 import sqlite3
 import pandas as pd
 
 app = Flask(__name__)
-app.secret_key = 'your-secret-key'  # Change this in production
+app.secret_key = 'your-secret-key'
 login_manager = LoginManager()
 login_manager.init_app(app)
 
@@ -50,22 +45,12 @@ def logout():
 def sensor_data():
     df = get_sensor_data()
     data = {
-        'co_level': {
-            'values': df['co_level'].tolist(),
-            'timestamps': df['timestamp'].tolist()
-        },
-        'co2_level': {
-            'values': df['co2_level'].tolist(),
-            'timestamps': df['timestamp'].tolist()
-        },
-        'temperature': {
-            'values': df['temperature'].tolist(),
-            'timestamps': df['timestamp'].tolist()
-        },
-        'humidity': {
-            'values': df['humidity'].tolist(),
-            'timestamps': df['timestamp'].tolist()
-        }
+        'co_level': {'values': df['co_level'].tolist(), 'timestamps': df['timestamp'].tolist()},
+        'co2_level': {'values': df['co2_level'].tolist(), 'timestamps': df['timestamp'].tolist()},
+        'temperature': {'values': df['temperature'].tolist(), 'timestamps': df['timestamp'].tolist()},
+        'humidity': {'values': df['humidity'].tolist(), 'timestamps': df['timestamp'].tolist()},
+        'pm25': {'values': df['pm25'].tolist(), 'timestamps': df['timestamp'].tolist()},
+        'pm10': {'values': df['pm10'].tolist(), 'timestamps': df['timestamp'].tolist()}
     }
     return jsonify(data)
 
