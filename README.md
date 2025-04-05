@@ -1,3 +1,20 @@
+To install these dependencies:
+Save the requirements.txt file in the same directory as mine_monitoring.py.
+Run
+pip install -r requirements.txt
+
+Project Directory Structure
+
+project_folder/
+├── mine_monitoring.py
+├── requirements.txt
+├── templates/
+│   ├── login.html
+│   ├── dashboard.html
+├── mine_data.db
+├── mine_monitoring.log
+
+
 # minedata
 /n data acquisition
 Create a data ingestion pipeline for mining environmental data. This pipeline uses Python with pandas for data handling and SQLite for storage.
