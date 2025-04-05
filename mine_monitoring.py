@@ -24,6 +24,17 @@ from torch.utils.data import DataLoader, TensorDataset
 import os
 import logging
 
+# Configuration
+CONFIG = {
+    'DB_PATH': os.path.join(os.path.dirname(__file__), 'mine_data.db'),
+    'USE_TRANSFORMER': False,  # Toggle for Transformer model (default to LinearRegression)
+    'SERIAL_PORT': '/dev/ttyUSB0',
+    'BAUD_RATE': 9600,
+    'GPIO_LED_PIN': 18,
+    'GPIO_BUZZER_PIN': 23,
+    'GPIO_VENTILATION_PIN': 24
+}
+
 # Configure logging
 logging.basicConfig(
     filename='mine_monitoring.log',
@@ -31,9 +42,12 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# MineDataCollector Class
+# Thread-safe database lock
+db_lock = threading.Lock()
+
+# --- Data Collection Section ---
 class MineDataCollector:
-    def __init__(self, db_path='mine_data.db', use_sensors=False, port='/dev/ttyUSB0', baud_rate=9600):
+    def __init__(self, db_path=CONFIG['DB_PATH'], use_sensors=False, port=CONFIG['SERIAL_PORT'], baud_rate=CONFIG['BAUD_RATE']):
         self.db_path = db_path
         self.use_sensors = use_sensors
         self.port = port
@@ -47,39 +61,42 @@ class MineDataCollector:
             try:
                 self.xbee = XBeeDevice(self.port, self.baud_rate)
                 self.xbee.open()
+                logging.info("XBee device initialized successfully")
             except Exception as e:
-                print(f"Warning: XBee initialization failed: {e}")
+                logging.error(f"XBee initialization failed: {e}")
                 self.use_sensors = False
 
     def setup_database(self):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS sensor_data (
-                timestamp DATETIME, location_id TEXT,
-                co_level FLOAT, co2_level FLOAT, temperature FLOAT,
-                humidity FLOAT, pm25 FLOAT, pm10 FLOAT
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS calibration_log (
-                timestamp DATETIME, sensor TEXT,
-                raw_value FLOAT, calibrated_value FLOAT, calibration_factor FLOAT
-            )
-        ''')
-        conn.commit()
-        conn.close()
+        with db_lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS sensor_data (
+                    timestamp DATETIME, location_id TEXT,
+                    co_level FLOAT, co2_level FLOAT, temperature FLOAT,
+                    humidity FLOAT, pm25 FLOAT, pm10 FLOAT
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS calibration_log (
+                    timestamp DATETIME, sensor TEXT,
+                    raw_value FLOAT, calibrated_value FLOAT, calibration_factor FLOAT
+                )
+            ''')
+            conn.commit()
+            conn.close()
 
     def log_calibration(self, sensor, raw_value, calibrated_value, factor):
-        conn = sqlite3.connect(self.db_path)
-        data = {
-            'timestamp': datetime.now(), 'sensor': sensor,
-            'raw_value': raw_value, 'calibrated_value': calibrated_value,
-            'calibration_factor': factor
-        }
-        df = pd.DataFrame([data])
-        df.to_sql('calibration_log', conn, if_exists='append', index=False)
-        conn.close()
+        with db_lock:
+            conn = sqlite3.connect(self.db_path)
+            data = {
+                'timestamp': datetime.now(), 'sensor': sensor,
+                'raw_value': raw_value, 'calibrated_value': calibrated_value,
+                'calibration_factor': factor
+            }
+            df = pd.DataFrame([data])
+            df.to_sql('calibration_log', conn, if_exists='append', index=False)
+            conn.close()
 
     def get_sensor_reading(self):
         if not self.use_sensors:
@@ -97,9 +114,9 @@ class MineDataCollector:
                     self.log_calibration(key, raw, calib_value, factor)
                 return calibrated
             else:
-                raise Exception("No data received")
+                raise Exception("No data received from XBee")
         except Exception as e:
-            print(f"Sensor reading failed: {e}")
+            logging.error(f"Failed to read sensor data from XBee: {e}")
             return self.simulate_sensor_reading()
 
     def simulate_sensor_reading(self):
@@ -114,29 +131,31 @@ class MineDataCollector:
         return sim_reading
 
     def collect_data(self, location_id, duration_seconds=60, interval_seconds=5):
-        conn = sqlite3.connect(self.db_path)
-        start_time = time.time()
-        end_time = start_time + duration_seconds
-        while time.time() < end_time:
-            readings = self.get_sensor_reading()
-            timestamp = datetime.now()
-            data = {'timestamp': timestamp, 'location_id': location_id, **readings}
-            df = pd.DataFrame([data])
-            df.to_sql('sensor_data', conn, if_exists='append', index=False)
-            print(f"Recorded data at {timestamp}: {readings}")
-            time.sleep(interval_seconds)
-        conn.close()
+        with db_lock:
+            conn = sqlite3.connect(self.db_path)
+            start_time = time.time()
+            end_time = start_time + duration_seconds
+            while time.time() < end_time:
+                readings = self.get_sensor_reading()
+                timestamp = datetime.now()
+                data = {'timestamp': timestamp, 'location_id': location_id, **readings}
+                df = pd.DataFrame([data])
+                df.to_sql('sensor_data', conn, if_exists='append', index=False)
+                print(f"Recorded data at {timestamp}: {readings}")
+                time.sleep(interval_seconds)
+            conn.close()
 
     def get_historical_data(self, start_date=None, end_date=None):
-        conn = sqlite3.connect(self.db_path)
-        query = "SELECT * FROM sensor_data"
-        if start_date and end_date:
-            query += f" WHERE timestamp BETWEEN '{start_date}' AND '{end_date}'"
-        df = pd.read_sql_query(query, conn)
-        conn.close()
+        with db_lock:
+            conn = sqlite3.connect(self.db_path)
+            query = "SELECT * FROM sensor_data"
+            if start_date and end_date:
+                query += f" WHERE timestamp BETWEEN '{start_date}' AND '{end_date}'"
+            df = pd.read_sql_query(query, conn)
+            conn.close()
         return df
 
-# MineAlarmSystem Class
+# --- Alarm System Section ---
 class MineAlarmSystem:
     def __init__(self, emergency_system=None):
         self.thresholds = {
@@ -144,8 +163,8 @@ class MineAlarmSystem:
             'humidity': 85.0, 'pm25': 35.0, 'pm10': 150.0
         }
         GPIO.setmode(GPIO.BCM)
-        self.led_pin = 18
-        self.buzzer_pin = 23
+        self.led_pin = CONFIG['GPIO_LED_PIN']
+        self.buzzer_pin = CONFIG['GPIO_BUZZER_PIN']
         GPIO.setup(self.led_pin, GPIO.OUT)
         GPIO.setup(self.buzzer_pin, GPIO.OUT)
         self.isolation_forest = IsolationForest(contamination=0.1, random_state=42)
@@ -187,10 +206,10 @@ class MineAlarmSystem:
     def cleanup(self):
         GPIO.cleanup()
 
-# EmergencyResponse Class
+# --- Emergency Response Section ---
 class EmergencyResponse:
     def __init__(self):
-        self.ventilation_pin = 24
+        self.ventilation_pin = CONFIG['GPIO_VENTILATION_PIN']
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(self.ventilation_pin, GPIO.OUT)
         self.config = {
@@ -276,9 +295,9 @@ class EmergencyResponse:
         GPIO.cleanup(self.ventilation_pin)
         self.lib.destroy()
 
-# MineDataForecaster Class
+# --- Forecasting Section ---
 class MineDataForecaster:
-    def __init__(self, use_transformer=True, sequence_length=12, prediction_length=1, checkpoint_dir='./checkpoints'):
+    def __init__(self, use_transformer=CONFIG['USE_TRANSFORMER'], sequence_length=12, prediction_length=1, checkpoint_dir='./checkpoints'):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.use_transformer = use_transformer
         self.sequence_length = sequence_length
@@ -435,7 +454,6 @@ class MineDataForecaster:
         self.model.load_state_dict(checkpoint['model_state_dict'])
         print(f"Loaded checkpoint from epoch {checkpoint['epoch']} with val_loss {checkpoint['val_loss']:.4f}")
 
-# StandardScaler Class (used by MineDataForecaster)
 class StandardScaler:
     def __init__(self):
         self.mean_ = None
@@ -452,7 +470,7 @@ class StandardScaler:
     def inverse_transform(self, data):
         return (data * self.scale_) + self.mean_
 
-# Flask App Setup
+# --- Web Dashboard Section ---
 app = Flask(__name__)
 app.secret_key = 'your-secret-key'
 login_manager = LoginManager()
@@ -467,20 +485,22 @@ def load_user(user_id):
     return User(user_id)
 
 def get_sensor_data():
-    conn = sqlite3.connect('mine_data.db')
-    df = pd.read_sql_query("SELECT * FROM sensor_data ORDER BY timestamp DESC LIMIT 1000", conn)
-    conn.close()
+    with db_lock:
+        conn = sqlite3.connect(CONFIG['DB_PATH'])
+        df = pd.read_sql_query("SELECT * FROM sensor_data ORDER BY timestamp DESC LIMIT 1000", conn)
+        conn.close()
     return df
 
 def get_recent_alerts():
-    conn = sqlite3.connect('mine_data.db')
-    df = pd.read_sql_query("""
-        SELECT timestamp, location_id, co_level, co2_level, temperature, humidity, pm25, pm10
-        FROM sensor_data 
-        WHERE co_level > 50 OR co2_level > 1000 OR temperature > 30 OR humidity > 85 OR pm25 > 35 OR pm10 > 150
-        ORDER BY timestamp DESC LIMIT 10
-    """, conn)
-    conn.close()
+    with db_lock:
+        conn = sqlite3.connect(CONFIG['DB_PATH'])
+        df = pd.read_sql_query("""
+            SELECT timestamp, location_id, co_level, co2_level, temperature, humidity, pm25, pm10
+            FROM sensor_data 
+            WHERE co_level > 50 OR co2_level > 1000 OR temperature > 30 OR humidity > 85 OR pm25 > 35 OR pm10 > 150
+            ORDER BY timestamp DESC LIMIT 10
+        """, conn)
+        conn.close()
     return df.to_dict(orient='records')
 
 @app.route('/')
@@ -521,7 +541,7 @@ def alerts():
     alerts = get_recent_alerts()
     return jsonify(alerts)
 
-# MineMonitoringSystem Class
+# --- System Management Section ---
 class MineMonitoringSystem:
     def __init__(self):
         self.collector = MineDataCollector(use_sensors=True)
