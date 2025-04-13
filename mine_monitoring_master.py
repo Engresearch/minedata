@@ -40,7 +40,8 @@ CONFIG = {
     'GPIO_BUZZER_PIN': 23,
     'GPIO_VENTILATION_PIN': 24,
     'LOG_FILE': 'mine_monitoring.log',
-    'LOG_INTERVAL': 30
+    'LOG_INTERVAL': 30,
+    'CSV_IMPORT_PATH': 'sensor_data.csv'
 }
 
 # Thresholds
@@ -136,6 +137,50 @@ class MineDataCollector:
             df = pd.DataFrame([data])
             df.to_sql('calibration_log', conn, if_exists='append', index=False)
             conn.close()
+
+    def import_csv_to_db(self, csv_path=CONFIG['CSV_IMPORT_PATH']):
+        """Import sensor data from CSV to SQLite database."""
+        try:
+            if not os.path.exists(csv_path):
+                logger.error(f"CSV file not found: {csv_path}")
+                return
+            df = pd.read_csv(csv_path)
+            # Map CSV columns to database schema
+            column_mapping = {
+                'Timestamp': 'timestamp',
+                'SensorID': 'location_id',
+                'MQ7_AirQuality': 'co_level',
+                'MQ135_AirQuality': 'co2_level',
+                'Temperature_C': 'temperature',
+                'Humidity': 'humidity',
+                'PM2_5': 'pm25',
+                'PM10': 'pm10'
+            }
+            # Validate required columns
+            required_columns = set(column_mapping.keys())
+            csv_columns = set(df.columns)
+            if not required_columns.issubset(csv_columns):
+                missing = required_columns - csv_columns
+                logger.error(f"Missing CSV columns: {missing}")
+                return
+            # Rename columns
+            df = df.rename(columns=column_mapping)
+            # Ensure numeric types
+            numeric_cols = ['co_level', 'co2_level', 'temperature', 'humidity', 'pm25', 'pm10']
+            for col in numeric_cols:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            # Drop rows with NaN in critical columns
+            df = df.dropna(subset=['timestamp', 'location_id'] + numeric_cols)
+            if df.empty:
+                logger.warning("No valid data to import after cleaning")
+                return
+            with db_lock:
+                conn = sqlite3.connect(self.db_path)
+                df.to_sql('sensor_data', conn, if_exists='append', index=False)
+                conn.close()
+            logger.info(f"Imported {len(df)} rows from {csv_path} to database")
+        except Exception as e:
+            logger.error(f"CSV import failed: {e}")
 
     def get_sensor_reading(self):
         if not self.use_sensors:
@@ -617,20 +662,6 @@ def get_recent_alerts():
         conn.close()
     return df.to_dict(orient='records')
 
-def get_heatmap_data():
-    df = get_sensor_data()
-    locations = ['mine_shaft_1', 'mine_shaft_2', 'ventilation_area']
-    heatmap = []
-    for loc in locations:
-        loc_data = df[df['location_id'] == loc].tail(10)
-        severity = 0
-        for _, row in loc_data.iterrows():
-            for key in THRESHOLDS:
-                if row[key] > THRESHOLDS[key]:
-                    severity += 1
-        heatmap.append({'location': loc, 'severity': severity})
-    return heatmap
-
 def get_gauge_data():
     df = get_sensor_data().tail(1)
     if df.empty:
@@ -666,11 +697,6 @@ def sensor_data():
 def alerts():
     alerts = get_recent_alerts()
     return jsonify(alerts)
-
-@app.route('/api/heatmap')
-def heatmap():
-    heatmap_data = get_heatmap_data()
-    return jsonify(heatmap_data)
 
 @app.route('/api/gauges')
 def gauges():
@@ -745,6 +771,8 @@ class MineMonitoringSystem:
     def start(self):
         self.running = True
         logger.info("Starting mine monitoring system...")
+        # Import CSV data on startup if file exists
+        self.collector.import_csv_to_db()
         self.train_models()
         threading.Thread(target=self.start_data_collection, daemon=True).start()
         threading.Thread(target=self.server.start, daemon=True).start()
