@@ -2,72 +2,239 @@
 <html>
 <head>
     <title>Mine Monitoring Dashboard</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        .chart { width: 100%; height: 300px; margin-bottom: 20px; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 20px; }
-        #alerts { padding: 20px; background: #ffe6e6; border: 1px solid #ff9999; margin: 20px; }
-        #alerts ul { list-style-type: none; padding: 0; }
-        #alerts li { margin: 5px 0; }
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .chart-container { width: 45%; display: inline-block; margin: 10px; }
+        .gauge-container { width: 15%; display: inline-block; margin: 10px; }
+        .heatmap-container { width: 45%; display: inline-block; margin: 10px; }
+        .alerts-container { width: 100%; margin: 20px 0; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        canvas { max-height: 300px; }
     </style>
 </head>
 <body>
-    <h1>Mine Monitoring Dashboard</h1>
-    <a href="/logout">Logout</a>
-    <div id="alerts"><h3>Recent Alerts</h3><ul id="alert-list"></ul></div>
-    <div class="grid">
-        <div class="chart" id="co-chart"></div>
-        <div class="chart" id="co2-chart"></div>
-        <div class="chart" id="temp-chart"></div>
-        <div class="chart" id="humidity-chart"></div>
-        <div class="chart" id="pm25-chart"></div>
-        <div class="chart" id="pm10-chart"></div>
+    <h1>Underground Mine Monitoring Dashboard</h1>
+    <div class="chart-container">
+        <canvas id="coChart"></canvas>
     </div>
-
+    <div class="chart-container">
+        <canvas id="co2Chart"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="tempChart"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="humidityChart"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="pm25Chart"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="pm10Chart"></canvas>
+    </div>
+    <div class="heatmap-container">
+        <canvas id="heatmapChart"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="predictionChart"></canvas>
+    </div>
+    <div class="gauge-container">
+        <canvas id="coGauge"></canvas>
+    </div>
+    <div class="gauge-container">
+        <canvas id="co2Gauge"></canvas>
+    </div>
+    <div class="gauge-container">
+        <canvas id="tempGauge"></canvas>
+    </div>
+    <div class="gauge-container">
+        <canvas id="humidityGauge"></canvas>
+    </div>
+    <div class="gauge-container">
+        <canvas id="pm25Gauge"></canvas>
+    </div>
+    <div class="gauge-container">
+        <canvas id="pm10Gauge"></canvas>
+    </div>
+    <div class="alerts-container">
+        <h2>Recent Alerts</h2>
+        <table id="alertsTable">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Location</th>
+                    <th>CO (ppm)</th>
+                    <th>CO2 (ppm)</th>
+                    <th>Temperature (°C)</th>
+                    <th>Humidity (%)</th>
+                    <th>PM2.5 (µg/m³)</th>
+                    <th>PM10 (µg/m³)</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
     <script>
-        function updateCharts() {
-            fetch('/api/sensor-data')
-                .then(response => response.json())
-                .then(data => {
-                    const charts = {
-                        'co-chart': {title: 'CO Level', data: data.co_level},
-                        'co2-chart': {title: 'CO2 Level', data: data.co2_level},
-                        'temp-chart': {title: 'Temperature', data: data.temperature},
-                        'humidity-chart': {title: 'Humidity', data: data.humidity},
-                        'pm25-chart': {title: 'PM2.5', data: data.pm25},
-                        'pm10-chart': {title: 'PM10', data: data.pm10}
-                    };
-                    for (const [elementId, chartInfo] of Object.entries(charts)) {
-                        const trace = {
-                            x: chartInfo.data.timestamps,
-                            y: chartInfo.data.values,
-                            type: 'scatter',
-                            mode: 'lines'
-                        };
-                        const layout = { title: chartInfo.title, margin: { t: 30, l: 40, r: 20, b: 40 } };
-                        Plotly.newPlot(elementId, [trace], layout);
+        function createLineChart(ctx, label, data, threshold) {
+            return new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.timestamps,
+                    datasets: [{
+                        label: label,
+                        data: data.values,
+                        borderColor: 'blue',
+                        fill: false
+                    }, {
+                        label: 'Threshold',
+                        data: Array(data.values.length).fill(threshold),
+                        borderColor: 'red',
+                        borderDash: [5, 5],
+                        fill: false
+                    }]
+                },
+                options: {
+                    scales: {
+                        x: { display: true, title: { display: true, text: 'Time' } },
+                        y: { display: true, title: { display: true, text: label } }
                     }
-                });
+                }
+            });
         }
 
-        function updateAlerts() {
-            fetch('/api/alerts')
-                .then(response => response.json())
-                .then(alerts => {
-                    const alertList = document.getElementById('alert-list');
-                    alertList.innerHTML = '';
-                    alerts.forEach(alert => {
-                        const li = document.createElement('li');
-                        li.textContent = `${alert.timestamp} - ${alert.location_id}: CO=${alert.co_level}, CO2=${alert.co2_level}, Temp=${alert.temperature}, Humidity=${alert.humidity}, PM2.5=${alert.pm25}, PM10=${alert.pm10}`;
-                        alertList.appendChild(li);
-                    });
-                });
+        function createGaugeChart(ctx, label, value, max, threshold) {
+            return new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    datasets: [{
+                        data: [value, max - value],
+                        backgroundColor: [value > threshold ? 'red' : 'green', '#e0e0e0'],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    circumference: 180,
+                    rotation: -90,
+                    cutout: '80%',
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { enabled: false },
+                        title: {
+                            display: true,
+                            text: `${label}: ${value.toFixed(1)}`,
+                            position: 'bottom'
+                        }
+                    }
+                }
+            });
         }
 
-        updateCharts();
-        updateAlerts();
-        setInterval(updateCharts, 30000);
-        setInterval(updateAlerts, 10000);  // Update alerts more frequently
+        function createHeatmapChart(ctx, data) {
+            return new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: data.map(d => d.location),
+                    datasets: [{
+                        label: 'Alert Severity',
+                        data: data.map(d => d.severity),
+                        backgroundColor: data.map(d => d.severity > 5 ? 'red' : d.severity > 2 ? 'orange' : 'green')
+                    }]
+                },
+                options: {
+                    scales: {
+                        y: { beginAtZero: true, title: { display: true, text: 'Severity Score' } }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+
+        function createPredictionChart(ctx, data) {
+            return new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['CO', 'CO2', 'Temp', 'Humidity', 'PM2.5', 'PM10'],
+                    datasets: [{
+                        label: 'Predicted Values',
+                        data: [
+                            data.co_level, data.co2_level, data.temperature,
+                            data.humidity, data.pm25, data.pm10
+                        ],
+                        backgroundColor: 'rgba(54, 162, 235, 0.5)'
+                    }]
+                },
+                options: {
+                    scales: {
+                        y: { beginAtZero: true, title: { display: true, text: 'Value' } }
+                    }
+                }
+            });
+        }
+
+        function updateCharts() {
+            fetch('/api/sensor-data').then(response => response.json()).then(data => {
+                createLineChart(document.getElementById('coChart').getContext('2d'),
+                    'CO (ppm)', data.co_level, 50);
+                createLineChart(document.getElementById('co2Chart').getContext('2d'),
+                    'CO2 (ppm)', data.co2_level, 1000);
+                createLineChart(document.getElementById('tempChart').getContext('2d'),
+                    'Temperature (°C)', data.temperature, 30);
+                createLineChart(document.getElementById('humidityChart').getContext('2d'),
+                    'Humidity (%)', data.humidity, 85);
+                createLineChart(document.getElementById('pm25Chart').getContext('2d'),
+                    'PM2.5 (µg/m³)', data.pm25, 35);
+                createLineChart(document.getElementById('pm10Chart').getContext('2d'),
+                    'PM10 (µg/m³)', data.pm10, 150);
+            });
+
+            fetch('/api/heatmap').then(response => response.json()).then(data => {
+                createHeatmapChart(document.getElementById('heatmapChart').getContext('2d'), data);
+            });
+
+            fetch('/api/gauges').then(response => response.json()).then(data => {
+                createGaugeChart(document.getElementById('coGauge').getContext('2d'),
+                    'CO (ppm)', data.co_level?.value || 0, data.co_level?.max || 75, data.co_level?.threshold || 50);
+                createGaugeChart(document.getElementById('co2Gauge').getContext('2d'),
+                    'CO2 (ppm)', data.co2_level?.value || 0, data.co2_level?.max || 1500, data.co2_level?.threshold || 1000);
+                createGaugeChart(document.getElementById('tempGauge').getContext('2d'),
+                    'Temp (°C)', data.temperature?.value || 0, data.temperature?.max || 45, data.temperature?.threshold || 30);
+                createGaugeChart(document.getElementById('humidityGauge').getContext('2d'),
+                    'Humidity (%)', data.humidity?.value || 0, data.humidity?.max || 127.5, data.humidity?.threshold || 85);
+                createGaugeChart(document.getElementById('pm25Gauge').getContext('2d'),
+                    'PM2.5 (µg/m³)', data.pm25?.value || 0, data.pm25?.max || 52.5, data.pm25?.threshold || 35);
+                createGaugeChart(document.getElementById('pm10Gauge').getContext('2d'),
+                    'PM10 (µg/m³)', data.pm10?.value || 0, data.pm10?.max || 225, data.pm10?.threshold || 150);
+            });
+
+            fetch('/api/predictions').then(response => response.json()).then(data => {
+                if (Object.keys(data).length) {
+                    createPredictionChart(document.getElementById('predictionChart').getContext('2d'), data);
+                }
+            });
+
+            fetch('/api/alerts').then(response => response.json()).then(alerts => {
+                const tbody = document.getElementById('alertsTable').getElementsByTagName('tbody')[0];
+                tbody.innerHTML = '';
+                alerts.forEach(alert => {
+                    const row = tbody.insertRow();
+                    row.insertCell().textContent = alert.timestamp;
+                    row.insertCell().textContent = alert.location_id;
+                    row.insertCell().textContent = alert.co_level.toFixed(2);
+                    row.insertCell().textContent = alert.co2_level.toFixed(2);
+                    row.insertCell().textContent = alert.temperature.toFixed(2);
+                    row.insertCell().textContent = alert.humidity.toFixed(2);
+                    row.insertCell().textContent = alert.pm25.toFixed(2);
+                    row.insertCell().textContent = alert.pm10.toFixed(2);
+                });
+            });
+
+            setTimeout(updateCharts, 10000);
+        }
+
+        window.onload = updateCharts;
     </script>
 </body>
 </html>
