@@ -7,7 +7,6 @@
         body { font-family: Arial, sans-serif; margin: 20px; }
         .chart-container { width: 45%; display: inline-block; margin: 10px; }
         .gauge-container { width: 15%; display: inline-block; margin: 10px; }
-        .heatmap-container { width: 45%; display: inline-block; margin: 10px; }
         .alerts-container { width: 100%; margin: 20px 0; }
         table { width: 100%; border-collapse: collapse; }
         th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
@@ -34,9 +33,6 @@
     </div>
     <div class="chart-container">
         <canvas id="pm10Chart"></canvas>
-    </div>
-    <div class="heatmap-container">
-        <canvas id="heatmapChart"></canvas>
     </div>
     <div class="chart-container">
         <canvas id="predictionChart"></canvas>
@@ -132,26 +128,6 @@
             });
         }
 
-        function createHeatmapChart(ctx, data) {
-            return new Chart(ctx, {
-                type: 'bar',
-                data: {
-                    labels: data.map(d => d.location),
-                    datasets: [{
-                        label: 'Alert Severity',
-                        data: data.map(d => d.severity),
-                        backgroundColor: data.map(d => d.severity > 5 ? 'red' : d.severity > 2 ? 'orange' : 'green')
-                    }]
-                },
-                options: {
-                    scales: {
-                        y: { beginAtZero: true, title: { display: true, text: 'Severity Score' } }
-                    },
-                    plugins: { legend: { display: false } }
-                }
-            });
-        }
-
         function createPredictionChart(ctx, data) {
             return new Chart(ctx, {
                 type: 'bar',
@@ -188,10 +164,6 @@
                     'PM2.5 (µg/m³)', data.pm25, 35);
                 createLineChart(document.getElementById('pm10Chart').getContext('2d'),
                     'PM10 (µg/m³)', data.pm10, 150);
-            });
-
-            fetch('/api/heatmap').then(response => response.json()).then(data => {
-                createHeatmapChart(document.getElementById('heatmapChart').getContext('2d'), data);
             });
 
             fetch('/api/gauges').then(response => response.json()).then(data => {
