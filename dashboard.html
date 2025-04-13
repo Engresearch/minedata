@@ -3,6 +3,7 @@
 <head>
     <title>Mine Monitoring Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4/dist/socket.io.min.js"></script>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; }
         .chart-container { width: 45%; display: inline-block; margin: 10px; }
@@ -74,19 +75,24 @@
         </table>
     </div>
     <script>
-        function createLineChart(ctx, label, data, threshold) {
+        const socket = io();
+
+        let coChart, co2Chart, tempChart, humidityChart, pm25Chart, pm10Chart, predictionChart;
+        let coGauge, co2Gauge, tempGauge, humidityGauge, pm25Gauge, pm10Gauge;
+
+        function createLineChart(ctx, label, data, timestamps, threshold) {
             return new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: data.timestamps,
+                    labels: timestamps,
                     datasets: [{
                         label: label,
-                        data: data.values,
+                        data: data,
                         borderColor: 'blue',
                         fill: false
                     }, {
                         label: 'Threshold',
-                        data: Array(data.values.length).fill(threshold),
+                        data: Array(data.length).fill(threshold),
                         borderColor: 'red',
                         borderDash: [5, 5],
                         fill: false
@@ -150,63 +156,183 @@
             });
         }
 
-        function updateCharts() {
-            fetch('/api/sensor-data').then(response => response.json()).then(data => {
-                createLineChart(document.getElementById('coChart').getContext('2d'),
-                    'CO (ppm)', data.co_level, 50);
-                createLineChart(document.getElementById('co2Chart').getContext('2d'),
-                    'CO2 (ppm)', data.co2_level, 1000);
-                createLineChart(document.getElementById('tempChart').getContext('2d'),
-                    'Temperature (°C)', data.temperature, 30);
-                createLineChart(document.getElementById('humidityChart').getContext('2d'),
-                    'Humidity (%)', data.humidity, 85);
-                createLineChart(document.getElementById('pm25Chart').getContext('2d'),
-                    'PM2.5 (µg/m³)', data.pm25, 35);
-                createLineChart(document.getElementById('pm10Chart').getContext('2d'),
-                    'PM10 (µg/m³)', data.pm10, 150);
-            });
+        function updateLineCharts(data) {
+            const timestamps = data.map(d => d.timestamp);
+            const coData = data.map(d => d.co_level);
+            const co2Data = data.map(d => d.co2_level);
+            const tempData = data.map(d => d.temperature);
+            const humidityData = data.map(d => d.humidity);
+            const pm25Data = data.map(d => d.pm25);
+            const pm10Data = data.map(d => d.pm10);
 
-            fetch('/api/gauges').then(response => response.json()).then(data => {
-                createGaugeChart(document.getElementById('coGauge').getContext('2d'),
-                    'CO (ppm)', data.co_level?.value || 0, data.co_level?.max || 75, data.co_level?.threshold || 50);
-                createGaugeChart(document.getElementById('co2Gauge').getContext('2d'),
-                    'CO2 (ppm)', data.co2_level?.value || 0, data.co2_level?.max || 1500, data.co2_level?.threshold || 1000);
-                createGaugeChart(document.getElementById('tempGauge').getContext('2d'),
-                    'Temp (°C)', data.temperature?.value || 0, data.temperature?.max || 45, data.temperature?.threshold || 30);
-                createGaugeChart(document.getElementById('humidityGauge').getContext('2d'),
-                    'Humidity (%)', data.humidity?.value || 0, data.humidity?.max || 127.5, data.humidity?.threshold || 85);
-                createGaugeChart(document.getElementById('pm25Gauge').getContext('2d'),
-                    'PM2.5 (µg/m³)', data.pm25?.value || 0, data.pm25?.max || 52.5, data.pm25?.threshold || 35);
-                createGaugeChart(document.getElementById('pm10Gauge').getContext('2d'),
-                    'PM10 (µg/m³)', data.pm10?.value || 0, data.pm10?.max || 225, data.pm10?.threshold || 150);
-            });
+            if (!coChart) {
+                coChart = createLineChart(document.getElementById('coChart').getContext('2d'),
+                    'CO (ppm)', coData, timestamps, 50);
+            } else {
+                coChart.data.labels = timestamps;
+                coChart.data.datasets[0].data = coData;
+                coChart.data.datasets[1].data = Array(coData.length).fill(50);
+                coChart.update();
+            }
 
-            fetch('/api/predictions').then(response => response.json()).then(data => {
-                if (Object.keys(data).length) {
-                    createPredictionChart(document.getElementById('predictionChart').getContext('2d'), data);
-                }
-            });
+            if (!co2Chart) {
+                co2Chart = createLineChart(document.getElementById('co2Chart').getContext('2d'),
+                    'CO2 (ppm)', co2Data, timestamps, 1000);
+            } else {
+                co2Chart.data.labels = timestamps;
+                co2Chart.data.datasets[0].data = co2Data;
+                co2Chart.data.datasets[1].data = Array(co2Data.length).fill(1000);
+                co2Chart.update();
+            }
 
-            fetch('/api/alerts').then(response => response.json()).then(alerts => {
-                const tbody = document.getElementById('alertsTable').getElementsByTagName('tbody')[0];
-                tbody.innerHTML = '';
-                alerts.forEach(alert => {
-                    const row = tbody.insertRow();
-                    row.insertCell().textContent = alert.timestamp;
-                    row.insertCell().textContent = alert.location_id;
-                    row.insertCell().textContent = alert.co_level.toFixed(2);
-                    row.insertCell().textContent = alert.co2_level.toFixed(2);
-                    row.insertCell().textContent = alert.temperature.toFixed(2);
-                    row.insertCell().textContent = alert.humidity.toFixed(2);
-                    row.insertCell().textContent = alert.pm25.toFixed(2);
-                    row.insertCell().textContent = alert.pm10.toFixed(2);
-                });
-            });
+            if (!tempChart) {
+                tempChart = createLineChart(document.getElementById('tempChart').getContext('2d'),
+                    'Temperature (°C)', tempData, timestamps, 30);
+            } else {
+                tempChart.data.labels = timestamps;
+                tempChart.data.datasets[0].data = tempData;
+                tempChart.data.datasets[1].data = Array(tempData.length).fill(30);
+                tempChart.update();
+            }
 
-            setTimeout(updateCharts, 10000);
+            if (!humidityChart) {
+                humidityChart = createLineChart(document.getElementById('humidityChart').getContext('2d'),
+                    'Humidity (%)', humidityData, timestamps, 85);
+            } else {
+                humidityChart.data.labels = timestamps;
+                humidityChart.data.datasets[0].data = humidityData;
+                humidityChart.data.datasets[1].data = Array(humidityData.length).fill(85);
+                humidityChart.update();
+            }
+
+            if (!pm25Chart) {
+                pm25Chart = createLineChart(document.getElementById('pm25Chart').getContext('2d'),
+                    'PM2.5 (µg/m³)', pm25Data, timestamps, 35);
+            } else {
+                pm25Chart.data.labels = timestamps;
+                pm25Chart.data.datasets[0].data = pm25Data;
+                pm25Chart.data.datasets[1].data = Array(pm25Data.length).fill(35);
+                pm25Chart.update();
+            }
+
+            if (!pm10Chart) {
+                pm10Chart = createLineChart(document.getElementById('pm10Chart').getContext('2d'),
+                    'PM10 (µg/m³)', pm10Data, timestamps, 150);
+            } else {
+                pm10Chart.data.labels = timestamps;
+                pm10Chart.data.datasets[0].data = pm10Data;
+                pm10Chart.data.datasets[1].data = Array(pm10Data.length).fill(150);
+                pm10Chart.update();
+            }
         }
 
-        window.onload = updateCharts;
+        function updateGaugeCharts(data) {
+            if (!coGauge) {
+                coGauge = createGaugeChart(document.getElementById('coGauge').getContext('2d'),
+                    'CO (ppm)', data.co_level?.value || 0, data.co_level?.max || 75, data.co_level?.threshold || 50);
+            } else {
+                coGauge.data.datasets[0].data = [data.co_level?.value || 0, (data.co_level?.max || 75) - (data.co_level?.value || 0)];
+                coGauge.data.datasets[0].backgroundColor = [(data.co_level?.value || 0) > (data.co_level?.threshold || 50) ? 'red' : 'green', '#e0e0e0'];
+                coGauge.options.plugins.title.text = `CO (ppm): ${(data.co_level?.value || 0).toFixed(1)}`;
+                coGauge.update();
+            }
+
+            if (!co2Gauge) {
+                co2Gauge = createGaugeChart(document.getElementById('co2Gauge').getContext('2d'),
+                    'CO2 (ppm)', data.co2_level?.value || 0, data.co2_level?.max || 1500, data.co2_level?.threshold || 1000);
+            } else {
+                co2Gauge.data.datasets[0].data = [data.co2_level?.value || 0, (data.co2_level?.max || 1500) - (data.co2_level?.value || 0)];
+                co2Gauge.data.datasets[0].backgroundColor = [(data.co2_level?.value || 0) > (data.co2_level?.threshold || 1000) ? 'red' : 'green', '#e0e0e0'];
+                co2Gauge.options.plugins.title.text = `CO2 (ppm): ${(data.co2_level?.value || 0).toFixed(1)}`;
+                co2Gauge.update();
+            }
+
+            if (!tempGauge) {
+                tempGauge = createGaugeChart(document.getElementById('tempGauge').getContext('2d'),
+                    'Temp (°C)', data.temperature?.value || 0, data.temperature?.max || 45, data.temperature?.threshold || 30);
+            } else {
+                tempGauge.data.datasets[0].data = [data.temperature?.value || 0, (data.temperature?.max || 45) - (data.temperature?.value || 0)];
+                tempGauge.data.datasets[0].backgroundColor = [(data.temperature?.value || 0) > (data.temperature?.threshold || 30) ? 'red' : 'green', '#e0e0e0'];
+                tempGauge.options.plugins.title.text = `Temp (°C): ${(data.temperature?.value || 0).toFixed(1)}`;
+                tempGauge.update();
+            }
+
+            if (!humidityGauge) {
+                humidityGauge = createGaugeChart(document.getElementById('humidityGauge').getContext('2d'),
+                    'Humidity (%)', data.humidity?.value || 0, data.humidity?.max || 127.5, data.humidity?.threshold || 85);
+            } else {
+                humidityGauge.data.datasets[0].data = [data.humidity?.value || 0, (data.humidity?.max || 127.5) - (data.humidity?.value || 0)];
+                humidityGauge.data.datasets[0].backgroundColor = [(data.humidity?.value || 0) > (data.humidity?.threshold || 85) ? 'red' : 'green', '#e0e0e0'];
+                humidityGauge.options.plugins.title.text = `Humidity (%): ${(data.humidity?.value || 0).toFixed(1)}`;
+                humidityGauge.update();
+            }
+
+            if (!pm25Gauge) {
+                pm25Gauge = createGaugeChart(document.getElementById('pm25Gauge').getContext('2d'),
+                    'PM2.5 (µg/m³)', data.pm25?.value || 0, data.pm25?.max || 52.5, data.pm25?.threshold || 35);
+            } else {
+                pm25Gauge.data.datasets[0].data = [data.pm25?.value || 0, (data.pm25?.max || 52.5) - (data.pm25?.value || 0)];
+                pm25Gauge.data.datasets[0].backgroundColor = [(data.pm25?.value || 0) > (data.pm25?.threshold || 35) ? 'red' : 'green', '#e0e0e0'];
+                pm25Gauge.options.plugins.title.text = `PM2.5 (µg/m³): ${(data.pm25?.value || 0).toFixed(1)}`;
+                pm25Gauge.update();
+            }
+
+            if (!pm10Gauge) {
+                pm10Gauge = createGaugeChart(document.getElementById('pm10Gauge').getContext('2d'),
+                    'PM10 (µg/m³)', data.pm10?.value || 0, data.pm10?.max || 225, data.pm10?.threshold || 150);
+            } else {
+                pm10Gauge.data.datasets[0].data = [data.pm10?.value || 0, (data.pm10?.max || 225) - (data.pm10?.value || 0)];
+                pm10Gauge.data.datasets[0].backgroundColor = [(data.pm10?.value || 0) > (data.pm10?.threshold || 150) ? 'red' : 'green', '#e0e0e0'];
+                pm10Gauge.options.plugins.title.text = `PM10 (µg/m³): ${(data.pm10?.value || 0).toFixed(1)}`;
+                pm10Gauge.update();
+            }
+        }
+
+        function updatePredictionChart(data) {
+            if (!predictionChart) {
+                predictionChart = createPredictionChart(document.getElementById('predictionChart').getContext('2d'), data);
+            } else {
+                predictionChart.data.datasets[0].data = [
+                    data.co_level, data.co2_level, data.temperature,
+                    data.humidity, data.pm25, data.pm10
+                ];
+                predictionChart.update();
+            }
+        }
+
+        function updateAlertsTable(alerts) {
+            const tbody = document.getElementById('alertsTable').getElementsByTagName('tbody')[0];
+            tbody.innerHTML = '';
+            alerts.forEach(alert => {
+                const row = tbody.insertRow();
+                row.insertCell().textContent = alert.timestamp;
+                row.insertCell().textContent = alert.location_id;
+                row.insertCell().textContent = alert.co_level.toFixed(2);
+                row.insertCell().textContent = alert.co2_level.toFixed(2);
+                row.insertCell().textContent = alert.temperature.toFixed(2);
+                row.insertCell().textContent = alert.humidity.toFixed(2);
+                row.insertCell().textContent = alert.pm25.toFixed(2);
+                row.insertCell().textContent = alert.pm10.toFixed(2);
+            });
+        }
+
+        socket.on('sensor_data', data => {
+            updateLineCharts(data);
+        });
+
+        socket.on('gauges', data => {
+            updateGaugeCharts(data);
+        });
+
+        socket.on('predictions', data => {
+            if (Object.keys(data).length) {
+                updatePredictionChart(data);
+            }
+        });
+
+        socket.on('alerts', alerts => {
+            updateAlertsTable(alerts);
+        });
     </script>
 </body>
 </html>
