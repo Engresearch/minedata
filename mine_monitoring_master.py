@@ -4,12 +4,13 @@ import threading
 import sqlite3
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import random
 import serial
 from digi.xbee.devices import XBeeDevice
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template
+from flask_socketio import SocketIO
 import RPi.GPIO as GPIO
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
@@ -26,6 +27,8 @@ import os
 import logging
 import socket
 import re
+import schedule
+from filelock import FileLock
 
 # Configuration
 CONFIG = {
@@ -41,7 +44,7 @@ CONFIG = {
     'GPIO_VENTILATION_PIN': 24,
     'LOG_FILE': 'mine_monitoring.log',
     'LOG_INTERVAL': 30,
-    'CSV_IMPORT_PATH': 'sensor_data.csv'
+    'CSV_PATH': 'sensor_data.csv'
 }
 
 # Thresholds
@@ -51,6 +54,12 @@ THRESHOLDS = {
 }
 
 VENTILATION_THRESHOLDS = {'co_level': 30.0, 'co2_level': 800.0}
+
+# Sensor validation ranges
+VALIDATION_RANGES = {
+    'co_level': (0, 1000), 'co2_level': (0, 5000), 'temperature': (-20, 60),
+    'humidity': (0, 100), 'pm25': (0, 500), 'pm10': (0, 1000)
+}
 
 # Regex patterns for TCP data parsing
 PATTERNS = {
@@ -71,8 +80,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger()
 
-# Thread-safe database lock
+# Thread-safe database and file locks
 db_lock = threading.Lock()
+csv_lock = FileLock(CONFIG['CSV_PATH'] + ".lock")
 
 # GPIO setup
 GPIO.setmode(GPIO.BCM)
@@ -81,8 +91,10 @@ GPIO.setup(CONFIG['GPIO_BUZZER_PIN'], GPIO.OUT)
 GPIO.setup(CONFIG['GPIO_VENTILATION_PIN'], GPIO.OUT)
 GPIO.output(CONFIG['GPIO_VENTILATION_PIN'], GPIO.LOW)
 
-# Flask app
+# Flask and SocketIO app
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'secret!'
+socketio = SocketIO(app)
 
 # --- Data Collection Section ---
 class MineDataCollector:
@@ -138,49 +150,19 @@ class MineDataCollector:
             df.to_sql('calibration_log', conn, if_exists='append', index=False)
             conn.close()
 
-    def import_csv_to_db(self, csv_path=CONFIG['CSV_IMPORT_PATH']):
-        """Import sensor data from CSV to SQLite database."""
-        try:
-            if not os.path.exists(csv_path):
-                logger.error(f"CSV file not found: {csv_path}")
-                return
-            df = pd.read_csv(csv_path)
-            # Map CSV columns to database schema
-            column_mapping = {
-                'Timestamp': 'timestamp',
-                'SensorID': 'location_id',
-                'MQ7_AirQuality': 'co_level',
-                'MQ135_AirQuality': 'co2_level',
-                'Temperature_C': 'temperature',
-                'Humidity': 'humidity',
-                'PM2_5': 'pm25',
-                'PM10': 'pm10'
-            }
-            # Validate required columns
-            required_columns = set(column_mapping.keys())
-            csv_columns = set(df.columns)
-            if not required_columns.issubset(csv_columns):
-                missing = required_columns - csv_columns
-                logger.error(f"Missing CSV columns: {missing}")
-                return
-            # Rename columns
-            df = df.rename(columns=column_mapping)
-            # Ensure numeric types
-            numeric_cols = ['co_level', 'co2_level', 'temperature', 'humidity', 'pm25', 'pm10']
-            for col in numeric_cols:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            # Drop rows with NaN in critical columns
-            df = df.dropna(subset=['timestamp', 'location_id'] + numeric_cols)
-            if df.empty:
-                logger.warning("No valid data to import after cleaning")
-                return
-            with db_lock:
-                conn = sqlite3.connect(self.db_path)
-                df.to_sql('sensor_data', conn, if_exists='append', index=False)
-                conn.close()
-            logger.info(f"Imported {len(df)} rows from {csv_path} to database")
-        except Exception as e:
-            logger.error(f"CSV import failed: {e}")
+    def validate_readings(self, readings):
+        """Validate sensor readings against physical ranges."""
+        valid = True
+        errors = []
+        for key, value in readings.items():
+            if key in VALIDATION_RANGES:
+                min_val, max_val = VALIDATION_RANGES[key]
+                if not (min_val <= value <= max_val):
+                    errors.append(f"{key} out of range: {value} (expected {min_val}-{max_val})")
+                    valid = False
+        if not valid:
+            logger.error(f"Invalid readings: {errors}")
+        return valid, errors
 
     def get_sensor_reading(self):
         if not self.use_sensors:
@@ -190,12 +172,20 @@ class MineDataCollector:
             if packet:
                 data = packet.data.decode().strip().split(',')
                 raw_values = [float(x) for x in data]
+                # Simulate redundant sensors for CO and CO2
+                co_readings = [raw_values[0] * (1 + random.uniform(-0.1, 0.1)) for _ in range(2)]
+                co2_readings = [raw_values[1] * (1 + random.uniform(-0.1, 0.1)) for _ in range(2)]
                 calibrated = {}
-                for i, (key, factor) in enumerate(self.calibration_factors.items()):
+                calibrated['co_level'] = np.median(co_readings) * self.calibration_factors['co_level']
+                calibrated['co2_level'] = np.median(co2_readings) * self.calibration_factors['co2_level']
+                for i, key in enumerate(['temperature', 'humidity', 'pm25', 'pm10'], 2):
                     raw = raw_values[i]
-                    calib_value = raw * factor
+                    calib_value = raw * self.calibration_factors[key]
                     calibrated[key] = calib_value
-                    self.log_calibration(key, raw, calib_value, factor)
+                    self.log_calibration(key, raw, calib_value, self.calibration_factors[key])
+                # Log calibration for median CO and CO2
+                self.log_calibration('co_level', np.median(co_readings), calibrated['co_level'], self.calibration_factors['co_level'])
+                self.log_calibration('co2_level', np.median(co2_readings), calibrated['co2_level'], self.calibration_factors['co2_level'])
                 return calibrated
             else:
                 raise Exception("No data received from XBee")
@@ -209,25 +199,112 @@ class MineDataCollector:
             'temperature': random.uniform(15, 40), 'humidity': random.uniform(30, 90),
             'pm25': random.uniform(0, 50), 'pm10': random.uniform(0, 200)
         }
+        # Simulate redundancy for CO and CO2
+        co_readings = [sim_reading['co_level'] * (1 + random.uniform(-0.1, 0.1)) for _ in range(2)]
+        co2_readings = [sim_reading['co2_level'] * (1 + random.uniform(-0.1, 0.1)) for _ in range(2)]
+        sim_reading['co_level'] = np.median(co_readings)
+        sim_reading['co2_level'] = np.median(co2_readings)
         for key in sim_reading:
-            self.log_calibration(key, sim_reading[key] / self.calibration_factors[key],
-                               sim_reading[key], self.calibration_factors[key])
+            raw_value = sim_reading[key] / self.calibration_factors[key]
+            self.log_calibration(key, raw_value, sim_reading[key], self.calibration_factors[key])
         return sim_reading
 
+    def write_to_csv(self, data):
+        """Write sensor data to CSV with thread-safe locking."""
+        column_mapping = {
+            'timestamp': 'Timestamp',
+            'location_id': 'SensorID',
+            'co_level': 'MQ7_AirQuality',
+            'co2_level': 'MQ135_AirQuality',
+            'temperature': 'Temperature_C',
+            'humidity': 'Humidity',
+            'pm25': 'PM2_5',
+            'pm10': 'PM10'
+        }
+        csv_data = {csv_col: data[db_col] for db_col, csv_col in column_mapping.items()}
+        df = pd.DataFrame([csv_data])
+        with csv_lock:
+            if os.path.exists(CONFIG['CSV_PATH']):
+                df.to_csv(CONFIG['CSV_PATH'], mode='a', header=False, index=False)
+            else:
+                df.to_csv(CONFIG['CSV_PATH'], mode='w', header=True, index=False)
+        logger.info(f"Appended data to {CONFIG['CSV_PATH']}: {csv_data}")
+
+    def import_csv_to_db(self, csv_path=CONFIG['CSV_PATH']):
+        """Import sensor data from CSV to SQLite database."""
+        try:
+            if not os.path.exists(csv_path):
+                logger.error(f"CSV file not found: {csv_path}")
+                return
+            df = pd.read_csv(csv_path)
+            column_mapping = {
+                'Timestamp': 'timestamp',
+                'SensorID': 'location_id',
+                'MQ7_AirQuality': 'co_level',
+                'MQ135_AirQuality': 'co2_level',
+                'Temperature_C': 'temperature',
+                'Humidity': 'humidity',
+                'PM2_5': 'pm25',
+                'PM10': 'pm10'
+            }
+            required_columns = set(column_mapping.keys())
+            csv_columns = set(df.columns)
+            if not required_columns.issubset(csv_columns):
+                missing = required_columns - csv_columns
+                logger.error(f"Missing CSV columns: {missing}")
+                return
+            df = df.rename(columns=column_mapping)
+            numeric_cols = ['co_level', 'co2_level', 'temperature', 'humidity', 'pm25', 'pm10']
+            for col in numeric_cols:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            df = df.dropna(subset=['timestamp', 'location_id'] + numeric_cols)
+            if df.empty:
+                logger.warning("No valid data to import after cleaning")
+                return
+            with db_lock:
+                conn = sqlite3.connect(self.db_path)
+                df.to_sql('sensor_data', conn, if_exists='append', index=False)
+                conn.close()
+            logger.info(f"Imported {len(df)} rows from {csv_path} to database")
+        except Exception as e:
+            logger.error(f"CSV import failed: {e}")
+
     def collect_data(self, location_id, duration_seconds=10, interval_seconds=2):
-        with db_lock:
-            conn = sqlite3.connect(self.db_path)
-            start_time = time.time()
-            end_time = start_time + duration_seconds
-            while time.time() < end_time:
-                readings = self.get_sensor_reading()
-                timestamp = datetime.now()
-                data = {'timestamp': timestamp, 'location_id': location_id, **readings}
+        start_time = time.time()
+        end_time = start_time + duration_seconds
+        while time.time() < end_time and system.running:
+            readings = self.get_sensor_reading()
+            valid, errors = self.validate_readings(readings)
+            if not valid:
+                logger.error(f"Skipping invalid data for {location_id}: {errors}")
+                time.sleep(interval_seconds)
+                continue
+            timestamp = datetime.now()
+            data = {'timestamp': timestamp, 'location_id': location_id, **readings}
+            # Write to SQLite
+            with db_lock:
+                conn = sqlite3.connect(self.db_path)
                 df = pd.DataFrame([data])
                 df.to_sql('sensor_data', conn, if_exists='append', index=False)
-                logger.info(f"Recorded data at {timestamp}: {readings}")
-                time.sleep(interval_seconds)
-            conn.close()
+                conn.close()
+            # Write to CSV
+            self.write_to_csv(data)
+            logger.info(f"Recorded data at {timestamp} for {location_id}: {readings}")
+            # Emit to dashboard
+            socketio.emit('sensor_data', get_sensor_data().to_dict(orient='records'))
+            socketio.emit('alerts', get_recent_alerts())
+            socketio.emit('gauges', get_gauge_data())
+            historical_data = self.get_historical_data()
+            if len(historical_data) >= 24:
+                sequence = historical_data[-24:][['co_level', 'co2_level', 'temperature', 'humidity', 'pm25', 'pm10']].values
+                timestamp = historical_data[-24:]['timestamp'].values
+                pred, _ = system.forecaster.predict(sequence, timestamp, steps=1)
+                pred_data = {
+                    'co_level': float(pred[0][0]), 'co2_level': float(pred[0][1]), 'temperature': float(pred[0][2]),
+                    'humidity': float(pred[0][3]), 'pm25': float(pred[0][4]), 'pm10': float(pred[0][5])
+                }
+                socketio.emit('predictions', pred_data)
+            time.sleep(interval_seconds)
 
     def get_historical_data(self, start_date=None, end_date=None):
         with db_lock:
@@ -319,7 +396,6 @@ class EmergencyResponse:
         logger.info("[EMERGENCY] Ventilation system deactivated")
 
     def send_alert(self, message, level='warning'):
-        # Email alert
         for contact in self.config['emergency_contacts']:
             msg = MIMEText(message)
             msg['Subject'] = f'MINE ALERT [{level.upper()}]: Emergency Situation'
@@ -333,8 +409,6 @@ class EmergencyResponse:
                 logger.info(f"Email alert sent to {contact}")
             except Exception as e:
                 logger.error(f"Email failed: {e}")
-
-        # VoIP call
         for number in self.config['phone_numbers']:
             try:
                 call = self.acc.make_call(number, pj.CallOpParam())
@@ -477,6 +551,21 @@ class MineDataForecaster:
         self.rf_trained = True
         logger.info("Random Forest model trained")
 
+    def retrain_models(self, historical_data):
+        """Retrain all models and return performance metrics."""
+        if len(historical_data) < 24:
+            logger.warning("Insufficient data for retraining (<24 records)")
+            return None
+        logger.info(f"Retraining models with {len(historical_data)} records")
+        # Retrain Isolation Forest (via alarm system)
+        system.alarm_system.train_anomaly_detector(historical_data)
+        # Retrain Random Forest and Transformer
+        self.train(historical_data, epochs=5)  # Reduced epochs for retraining
+        # Evaluate models
+        metrics = self.evaluate(historical_data)
+        logger.info(f"Retraining complete. Metrics: {json.dumps(metrics, indent=2)}")
+        return metrics
+
     def _validate(self, val_loader, criterion):
         self.model.eval()
         val_loss = 0
@@ -580,7 +669,11 @@ class MineServer:
             df = pd.DataFrame(self.data_buffer)
             df.to_sql('sensor_data', conn, if_exists='append', index=False)
             conn.close()
-        logger.info(f"Saved {len(self.data_buffer)} rows to database")
+        system.collector.write_to_csv(self.data_buffer[-1])
+        logger.info(f"Saved {len(self.data_buffer)} rows to database and CSV")
+        socketio.emit('sensor_data', get_sensor_data().to_dict(orient='records'))
+        socketio.emit('alerts', get_recent_alerts())
+        socketio.emit('gauges', get_gauge_data())
         self.data_buffer.clear()
 
     def send_feedback(self, command):
@@ -600,6 +693,10 @@ class MineServer:
                     logger.info(f"Received from {client_address}: {raw_data}")
                     parsed_data = self.parse_tcp_data(raw_data)
                     if parsed_data:
+                        valid, errors = system.collector.validate_readings(parsed_data)
+                        if not valid:
+                            logger.error(f"Skipping invalid TCP data: {errors}")
+                            continue
                         self.data_buffer.append(parsed_data)
                         alerts = self.alarm_system.check_thresholds(parsed_data)
                         is_anomaly = self.alarm_system.check_anomalies(parsed_data)
@@ -631,9 +728,13 @@ class MineServer:
         logger.info(f"TCP server listening on {CONFIG['TCP_HOST']}:{CONFIG['TCP_PORT']}")
         last_save_time = time.time()
         try:
-            while True:
-                connection, client_address = server_socket.accept()
-                threading.Thread(target=self.handle_client, args=(connection, client_address)).start()
+            while system.running:
+                server_socket.settimeout(1.0)
+                try:
+                    connection, client_address = server_socket.accept()
+                    threading.Thread(target=self.handle_client, args=(connection, client_address)).start()
+                except socket.timeout:
+                    pass
                 if time.time() - last_save_time >= CONFIG['LOG_INTERVAL']:
                     self.save_to_db()
                     last_save_time = time.time()
@@ -680,44 +781,6 @@ def get_gauge_data():
 def index():
     return render_template('dashboard.html')
 
-@app.route('/api/sensor-data')
-def sensor_data():
-    df = get_sensor_data()
-    data = {
-        'co_level': {'values': df['co_level'].tolist(), 'timestamps': df['timestamp'].tolist()},
-        'co2_level': {'values': df['co2_level'].tolist(), 'timestamps': df['timestamp'].tolist()},
-        'temperature': {'values': df['temperature'].tolist(), 'timestamps': df['timestamp'].tolist()},
-        'humidity': {'values': df['humidity'].tolist(), 'timestamps': df['timestamp'].tolist()},
-        'pm25': {'values': df['pm25'].tolist(), 'timestamps': df['timestamp'].tolist()},
-        'pm10': {'values': df['pm10'].tolist(), 'timestamps': df['timestamp'].tolist()}
-    }
-    return jsonify(data)
-
-@app.route('/api/alerts')
-def alerts():
-    alerts = get_recent_alerts()
-    return jsonify(alerts)
-
-@app.route('/api/gauges')
-def gauges():
-    gauge_data = get_gauge_data()
-    return jsonify(gauge_data)
-
-@app.route('/api/predictions')
-def predictions():
-    df = get_sensor_data()
-    if len(df) < 24:
-        return jsonify({})
-    sequence = df[-24:][['co_level', 'co2_level', 'temperature', 'humidity', 'pm25', 'pm10']].values
-    timestamp = df[-24:]['timestamp'].values
-    forecaster = system.forecaster
-    pred, _ = forecaster.predict(sequence, timestamp, steps=1)
-    pred_data = {
-        'co_level': pred[0][0], 'co2_level': pred[0][1], 'temperature': pred[0][2],
-        'humidity': pred[0][3], 'pm25': pred[0][4], 'pm10': pred[0][5]
-    }
-    return jsonify(pred_data)
-
 # --- System Management Section ---
 class MineMonitoringSystem:
     def __init__(self):
@@ -731,6 +794,28 @@ class MineMonitoringSystem:
     def simulate_optical_fiber(self, data):
         logger.info(f"Simulated optical fiber transmission: {data}")
         return data
+
+    def schedule_retraining(self):
+        """Schedule weekly model retraining every Sunday at midnight."""
+        def retrain_job():
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=7)
+            historical_data = self.collector.get_historical_data(
+                start_date=start_date.strftime('%Y-%m-%d %H:%M:%S'),
+                end_date=end_date.strftime('%Y-%m-%d %H:%M:%S')
+            )
+            metrics = self.forecaster.retrain_models(historical_data)
+            if metrics:
+                logger.info("Weekly retraining completed successfully")
+            else:
+                logger.warning("Weekly retraining skipped due to insufficient data")
+        schedule.every().sunday.at("00:00").do(retrain_job)
+        threading.Thread(target=self.run_scheduler, daemon=True).start()
+
+    def run_scheduler(self):
+        while self.running:
+            schedule.run_pending()
+            time.sleep(60)
 
     def start_data_collection(self):
         while self.running:
@@ -748,10 +833,10 @@ class MineMonitoringSystem:
                     self.alarm_system.trigger_alarm(duration=1)
                 historical_data = self.collector.get_historical_data()
                 predictions = None
-                if len(historical_data) > 24:
-                    sequence = historical_data[-24:][['co_level', 'co2_level', 'temperature',
+                if len(historical_data) >)self.sequence_length:
+                    sequence = historical_data[-self.sequence_length:][['co_level', 'co2_level', 'temperature',
                                                     'humidity', 'pm25', 'pm10']].values
-                    timestamp = historical_data[-24:]['timestamp'].values
+                    timestamp = historical_data[-self.sequence_length:]['timestamp'].values
                     predictions, _ = self.forecaster.predict(sequence, timestamp)
                     logger.info(f"Predictions for {location}: {predictions}")
                 responses = self.emergency_system.assess_situation(readings, predictions, is_anomaly)
@@ -766,17 +851,17 @@ class MineMonitoringSystem:
             self.alarm_system.train_anomaly_detector(historical_data)
             self.forecaster.train(historical_data)
             metrics = self.forecaster.evaluate(historical_data)
-            logger.info(f"Forecasting Model Metrics: {metrics}")
+            logger.info(f"Initial Model Metrics: {metrics}")
 
     def start(self):
         self.running = True
         logger.info("Starting mine monitoring system...")
-        # Import CSV data on startup if file exists
         self.collector.import_csv_to_db()
         self.train_models()
+        self.schedule_retraining()
         threading.Thread(target=self.start_data_collection, daemon=True).start()
         threading.Thread(target=self.server.start, daemon=True).start()
-        app.run(host='0.0.0.0', port=8080)
+        socketio.run(app, host='0.0.0.0', port=8080)
 
     def stop(self):
         self.running = False
